@@ -1,0 +1,8 @@
+{
+  "appId": "com.nutrilog.app",
+  "appName": "NutriLog",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

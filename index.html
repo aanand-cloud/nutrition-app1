@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="theme-color" content="#0f766e"/>
+  <meta name="description" content="Photo meal tracking from £1.99/mo — NHS &amp; public sector staff discounts. AI estimates only; not affiliated with the NHS."/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+  <title>NutriLog — Photo Calorie Tracker</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230f766e'/><text y='23' x='6' font-size='18'>🥗</text></svg>"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/src/styles/app.css"/>
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <div class="header-inner">
+        <h1 class="logo">NutriLog</h1>
+        <p class="greeting" id="headerGreeting"></p>
+        <p class="tagline" id="headerDate"></p>
+      </div>
+    </header>
+    <main id="main" class="main"></main>
+    <nav class="bottom-nav" aria-label="Main navigation">
+      <button type="button" class="nav-btn active" data-view="today" aria-current="page">
+        <span class="nav-icon">📊</span>
+        <span>Today</span>
+      </button>
+      <button type="button" class="nav-btn nav-btn--primary" data-view="log" aria-label="Log a meal">
+        <span class="nav-icon nav-icon--large">📷</span>
+        <span>Log</span>
+      </button>
+      <button type="button" class="nav-btn" data-view="reports">
+        <span class="nav-icon">📈</span>
+        <span>Reports</span>
+      </button>
+      <button type="button" class="nav-btn" data-view="settings">
+        <span class="nav-icon">⚙️</span>
+        <span>Settings</span>
+      </button>
+    </nav>
+    <p class="app-disclaimer">NutriLog gives AI estimates only — not medical or dietary advice. Check food labels if unsure, and speak to your GP or a dietitian for health concerns. <button type="button" class="link-btn" data-legal="privacy">Privacy</button> · <button type="button" class="link-btn" data-legal="terms">Terms</button></p>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
