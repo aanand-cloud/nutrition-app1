@@ -82,7 +82,7 @@ export async function renderToday(root, { onLog, onRefresh, onReports, onSetting
 
   const weekStart = new Date();
   weekStart.setDate(weekStart.getDate() - 6);
-  const weekMeals = await getMealsInRange(weekStart.toISOString().slice(0, 10), dateKey);
+  const weekMeals = await getMealsInRange(todayKey(weekStart), dateKey);
   const weeklyTip = topWeeklyInsight(weekMeals);
   const cuisine = weekMeals.length ? await getCuisineTips(weekMeals) : { tips: [] };
 
@@ -247,7 +247,7 @@ export async function renderSettings(root, { onSave, onGoToday, showToast, profi
   const end = todayKey();
   const weekStart = new Date();
   weekStart.setDate(weekStart.getDate() - 6);
-  const weekMeals = await getMealsInRange(weekStart.toISOString().slice(0, 10), end);
+  const weekMeals = await getMealsInRange(todayKey(weekStart), end);
   const todayMeals = await getMealsForDate(end);
   const cuisine = weekMeals.length ? await getCuisineTips(weekMeals) : null;
 
@@ -338,7 +338,7 @@ export async function renderSettings(root, { onSave, onGoToday, showToast, profi
               <label class="goal-hero-field">
                 <span class="goal-hero-label">Daily calorie target</span>
                 <div class="goal-hero-input-wrap">
-                  <input type="number" name="calories_kcal" value="${goals.calories_kcal}" min="0" step="50" inputmode="numeric" aria-label="Daily calories"/>
+                  <input type="number" name="calories_kcal" value="${goals.calories_kcal}" min="0" step="1" inputmode="numeric" aria-label="Daily calories"/>
                   <span class="goal-hero-unit">kcal</span>
                 </div>
               </label>
@@ -832,7 +832,7 @@ export async function renderSettings(root, { onSave, onGoToday, showToast, profi
         const end = todayKey();
         const weekStart = new Date();
         weekStart.setDate(weekStart.getDate() - 6);
-        const weekMeals = await getMealsInRange(weekStart.toISOString().slice(0, 10), end);
+        const weekMeals = await getMealsInRange(todayKey(weekStart), end);
         const todayMeals = await getMealsForDate(end);
         const cuisine = weekMeals.length ? await getCuisineTips(weekMeals) : null;
         const { runPersonalisedNotificationCheck } = await import('../services/notifications.js');

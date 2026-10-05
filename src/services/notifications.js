@@ -2,7 +2,7 @@ import { getSession } from './auth.js';
 import { buildWeeklyPushMessage, buildDailyPushMessage } from './push-messages.js';
 import { weekReport } from './reports.js';
 import { getGoals } from './goals.js';
-import { sumNutrition } from './storage.js';
+import { sumNutrition, todayKey } from './storage.js';
 
 const PREFS_KEY = 'nutrilog_notify_prefs';
 const CACHE_KEY = 'nutrilog_notify_cache';
@@ -292,10 +292,6 @@ function readCache() {
 
 function writeCache(data) {
   localStorage.setItem(CACHE_KEY, JSON.stringify(data));
-}
-
-function todayKey() {
-  return new Date().toISOString().slice(0, 10);
 }
 
 function weekId() {
