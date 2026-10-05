@@ -1,7 +1,14 @@
-import { renderToday, renderSettings, setSettingsTab } from './views/today.js';
+import { renderToday, renderSettings, setSettingsTab, syncResultMessage, isAuthFormOnScreen } from './views/today.js';
 import { renderLog, isLogBusy } from './views/log.js';
 import { renderReports } from './views/reports.js';
-import { onAuthChange, getUser, isSupabaseConfigured } from './services/auth.js';
+import {
+  onAuthChange,
+  isSupabaseConfigured,
+  capturePasswordRecoveryFromUrl,
+  isPasswordRecoveryPending,
+  markPasswordRecovery,
+  consumeAuthIntent,
+} from './services/auth.js';
 import { fullSync } from './services/sync.js';
 import { verifyCheckoutSession, setPlan, startPlanCheckout, isPro, planLabel, syncTopUpFromCloud, syncScanStateFromProfile } from './services/subscription.js';
 import { getMealsInRange, getMealsForDate, todayKey } from './services/storage.js';
@@ -12,8 +19,10 @@ import { openLegalModal } from './views/legal.js';
 
 let currentView = 'today';
 let cachedProfile = null;
+let refreshGen = 0;
 
 export function initApp() {
+  capturePasswordRecoveryFromUrl();
   const main = document.getElementById('main');
   const headerDate = document.getElementById('headerDate');
   const headerGreeting = document.getElementById('headerGreeting');
@@ -61,17 +70,21 @@ export function initApp() {
     showToast._t = setTimeout(() => { toast.hidden = true; }, ms);
   }
 
+  function activateNav(view) {
+    document.querySelectorAll('.nav-btn').forEach((btn) => {
+      const active = btn.dataset.view === view;
+      btn.classList.toggle('active', active);
+      btn.toggleAttribute('aria-current', active ? 'page' : false);
+    });
+  }
+
   function setView(view) {
     if (currentView === 'log' && view !== 'log' && isLogBusy()) {
       const leave = window.confirm('Leave meal logging? Tap Log again to continue where you left off.');
       if (!leave) return;
     }
     currentView = view;
-    document.querySelectorAll('.nav-btn').forEach((btn) => {
-      const active = btn.dataset.view === view;
-      btn.classList.toggle('active', active);
-      btn.toggleAttribute('aria-current', active ? 'page' : false);
-    });
+    activateNav(view);
     refresh();
   }
 
@@ -86,10 +99,13 @@ export function initApp() {
   }
 
   async function refresh() {
+    const gen = ++refreshGen;
     main.setAttribute('aria-busy', 'true');
     try {
       await updateHeader();
+      if (gen !== refreshGen) return;
       const profile = cachedProfile || await getProfile();
+      if (gen !== refreshGen) return;
       if (currentView === 'today') {
         await renderToday(main, {
           onLog: () => setView('log'),
@@ -104,7 +120,7 @@ export function initApp() {
           onCancel: () => setView('today'),
           showToast,
           onUpgrade: handleUpgrade,
-          onSignIn: () => openSettings('account'),
+          onSignIn: () => openSettings('account', { focusAuth: true }),
           profile,
         });
       } else if (currentView === 'reports') {
@@ -118,7 +134,7 @@ export function initApp() {
         });
       }
     } finally {
-      main.removeAttribute('aria-busy');
+      if (gen === refreshGen) main.removeAttribute('aria-busy');
     }
   }
 
@@ -130,18 +146,65 @@ export function initApp() {
     btn.addEventListener('click', () => openLegalModal(btn.dataset.legal));
   });
 
-  onAuthChange(async (session) => {
-    if (session && isSupabaseConfigured()) {
+  onAuthChange(async (session, event) => {
+    if (event === 'PASSWORD_RECOVERY') {
+      markPasswordRecovery();
+      setSettingsTab('account');
+      currentView = 'settings';
+      activateNav('settings');
+    }
+
+    let userJustAuthenticated = false;
+    if (event === 'SIGNED_IN') {
+      const intent = consumeAuthIntent();
+      if (intent && session && isSupabaseConfigured()) {
+        userJustAuthenticated = true;
+        try {
+          const result = await fullSync();
+          if (result.plan) setPlan(result.plan);
+          const moved = (result.pushed || result.pulled || result.failed)
+            ? syncResultMessage(result)
+            : '';
+          if (intent === 'signup') showToast('Account created — welcome!');
+          else if (moved) showToast(`Signed in · ${moved}`);
+          else showToast('Signed in');
+        } catch (_) {
+          showToast(intent === 'signup'
+            ? 'Account created — sync will retry later'
+            : 'Signed in — sync will retry later');
+        }
+      }
+    } else if (
+      session
+      && isSupabaseConfigured()
+      && (event === 'INITIAL_SESSION' || event === 'PASSWORD_RECOVERY')
+    ) {
       try {
         const result = await fullSync();
         if (result.plan) setPlan(result.plan);
       } catch (_) {}
     }
-    if (currentView === 'settings' || currentView === 'today') refresh();
+
+    const shouldRefresh = userJustAuthenticated
+      || event === 'INITIAL_SESSION'
+      || event === 'SIGNED_OUT'
+      || event === 'USER_UPDATED'
+      || event === 'PASSWORD_RECOVERY';
+    // The first cloud check can finish after someone has already opened sign-in.
+    // Rebuilding that form would clear what they typed.
+    if (event === 'INITIAL_SESSION' && !session && isAuthFormOnScreen()) return;
+    if (shouldRefresh) refresh();
   });
 
   handleCheckoutReturn().finally(async () => {
     await runNotificationChecks();
+    if (isPasswordRecoveryPending()) {
+      setSettingsTab('account');
+      currentView = 'settings';
+      activateNav('settings');
+      refresh();
+      return;
+    }
     const url = new URL(window.location.href);
     const view = url.searchParams.get('view');
     if (view === 'reports' || view === 'settings' || view === 'log' || view === 'today') {

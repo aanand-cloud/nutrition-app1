@@ -2,7 +2,23 @@ import { getGoals, formatEnergy, formatEnergyParts, getUnitPrefs, saveGoals, sav
 import { getMealsForDate, getMealsInRange, sumNutrition, deleteMeal, todayKey, clearAllLocalMeals } from '../services/storage.js';
 import { openMealEditorModal } from '../services/meal-editor.js';
 import { topWeeklyInsight, weekReport } from '../services/reports.js';
-import { getUser, signIn, signUp, signOut, resetPassword, isSupabaseConfigured } from '../services/auth.js';
+import {
+  getUser,
+  signIn,
+  signUp,
+  signOut,
+  resetPassword,
+  updatePassword,
+  isSupabaseConfigured,
+  isPasswordRecoveryPending,
+  hasResetLinkHint,
+  clearResetLinkHint,
+  clearPasswordRecovery,
+  markPasswordRecovery,
+  setAuthIntent,
+  cancelAuthIntent,
+} from '../services/auth.js';
+import { authErrorText, friendlyAuthError } from '../services/auth-helpers.js';
 import { getProfile, saveDisplayName, saveDiscountPrefs, saveVoucherRedemption } from '../services/profile.js';
 import { fullSync } from '../services/sync.js';
 import { getCuisineTips } from '../services/cuisine-tips.js';
@@ -39,13 +55,16 @@ import { openLegalModal } from './legal.js';
 const wizardActivities = activityOptions();
 let activeSettingsTab = 'targets';
 let openDiscountSection = false;
+let focusAuthOnNextRender = false;
+let authMode = 'signin';
 
 /** Jump to a specific Goals tab (e.g. plans for NHS discount CTA). */
-export function setSettingsTab(tab, { openDiscount = false } = {}) {
+export function setSettingsTab(tab, { openDiscount = false, focusAuth = false } = {}) {
   if (['targets', 'account', 'plans', 'alerts'].includes(tab)) {
     activeSettingsTab = tab;
   }
   openDiscountSection = Boolean(openDiscount);
+  if (focusAuth) focusAuthOnNextRender = true;
 }
 
 export async function renderToday(root, { onLog, onRefresh, onReports, onSettings, profile }) {
@@ -157,7 +176,7 @@ export async function renderToday(root, { onLog, onRefresh, onReports, onSetting
 
   root.querySelector('#emptyLogBtn')?.addEventListener('click', onLog);
   root.querySelector('#discountHeroBtn')?.addEventListener('click', () => onSettings?.('plans', { openDiscount: true }));
-  root.querySelector('#goSignIn')?.addEventListener('click', () => onSettings?.('account'));
+  root.querySelector('#goSignIn')?.addEventListener('click', () => onSettings?.('account', { focusAuth: true }));
   root.querySelector('#todayUpgrade')?.addEventListener('click', () => onSettings?.('plans'));
   root.querySelector('#viewReportsBtn')?.addEventListener('click', () => onReports?.());
   root.querySelector('#moreTipsBtn')?.addEventListener('click', () => onReports?.());
@@ -248,6 +267,9 @@ export async function renderSettings(root, { onSave, onGoToday, showToast, profi
   const discount = getDiscountEligibility(profile, profile.email || user?.email || '');
   const currentPlan = getPlan();
   const initials = (displayName || user?.email || '?').charAt(0).toUpperCase();
+  const recoveryPending = Boolean(user) && isPasswordRecoveryPending();
+  const resetLinkExpired = !user && hasResetLinkHint();
+  const signingUp = authMode === 'signup';
 
   root.innerHTML = `
     <div class="settings-screen">
@@ -362,6 +384,7 @@ export async function renderSettings(root, { onSave, onGoToday, showToast, profi
             </div>
           </div>
 
+          ${user || !cloudReady ? `
           <p class="settings-group-label">Your name</p>
           <form id="nameForm" class="auth-form settings-form-compact">
             <label class="field full">
@@ -370,11 +393,29 @@ export async function renderSettings(root, { onSave, onGoToday, showToast, profi
             </label>
             <button type="submit" class="btn btn-primary full">Save name</button>
           </form>
+          ` : ''}
 
           <p class="settings-group-label">Cloud backup</p>
           <p class="fine-print">Meal photos are analysed by AI. Signed-in data is stored in your secure cloud account.</p>
           ${!cloudReady ? `
             <p class="card-desc">Cloud login is not configured on this device.</p>
+          ` : recoveryPending ? `
+            <form id="newPasswordForm" class="auth-form settings-form-compact" novalidate>
+              <p class="card-desc">Choose a new password to finish resetting your account.</p>
+              <label class="field full">
+                <span>New password</span>
+                <span class="password-row">
+                  <input type="password" id="newPassword" name="password" autocomplete="new-password" placeholder="At least 6 characters" minlength="6"/>
+                  <button type="button" class="password-toggle" data-password-toggle aria-label="Show password">Show</button>
+                </span>
+              </label>
+              <label class="field full">
+                <span>Confirm password</span>
+                <input type="password" name="confirm" autocomplete="new-password" placeholder="Repeat your new password" minlength="6"/>
+              </label>
+              <p class="auth-feedback" id="resetFeedback" hidden></p>
+              <button type="submit" class="btn btn-primary full" id="updatePasswordBtn">Update password</button>
+            </form>
           ` : user ? `
             <div class="settings-action-row">
               <button type="button" class="btn btn-ghost" id="syncBtn">Sync now</button>
@@ -382,25 +423,32 @@ export async function renderSettings(root, { onSave, onGoToday, showToast, profi
             </div>
           ` : `
             <p class="card-desc">Back up meals and sync across your phone and computer.</p>
-            <form id="authForm" class="auth-form settings-form-compact">
-              <label class="field full">
-                <span>First name</span>
-                <input type="text" name="display_name" required maxlength="40" autocomplete="given-name" placeholder="e.g. Sarah"/>
-              </label>
-              <label class="field full">
-                <span>Email</span>
-                <input type="email" name="email" required autocomplete="email" inputmode="email" placeholder="you@email.com"/>
-              </label>
-              <label class="field full">
-                <span>Password</span>
-                <input type="password" name="password" required minlength="6" autocomplete="current-password" placeholder="At least 6 characters"/>
-              </label>
-              <div class="settings-auth-actions">
-                <button type="button" class="btn btn-ghost" id="signUpBtn">Create account</button>
-                <button type="submit" class="btn btn-primary">Sign in</button>
+            <div class="auth-card" id="authCard">
+              <div class="auth-switch" role="tablist" aria-label="Account access">
+                <button type="button" class="auth-switch-btn ${signingUp ? '' : 'active'}" role="tab" data-auth-mode="signin" aria-selected="${signingUp ? 'false' : 'true'}">Sign in</button>
+                <button type="button" class="auth-switch-btn ${signingUp ? 'active' : ''}" role="tab" data-auth-mode="signup" aria-selected="${signingUp ? 'true' : 'false'}">Create account</button>
               </div>
-              <button type="button" class="btn btn-ghost btn-sm full" id="forgotPasswordBtn">Forgot password?</button>
-            </form>
+              <form id="authForm" class="auth-form settings-form-compact" data-mode="${signingUp ? 'signup' : 'signin'}" novalidate>
+                <label class="field full" data-auth-name ${signingUp ? '' : 'hidden'}>
+                  <span>First name</span>
+                  <input type="text" name="display_name" maxlength="40" autocomplete="given-name" placeholder="e.g. Sarah" ${signingUp ? '' : 'disabled'}/>
+                </label>
+                <label class="field full">
+                  <span>Email</span>
+                  <input type="email" name="email" autocomplete="username" inputmode="email" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="you@email.com"/>
+                </label>
+                <label class="field full">
+                  <span>Password</span>
+                  <span class="password-row">
+                    <input type="password" name="password" autocomplete="${signingUp ? 'new-password' : 'current-password'}" placeholder="${signingUp ? 'At least 6 characters' : 'Your password'}"/>
+                    <button type="button" class="password-toggle" data-password-toggle aria-label="Show password">Show</button>
+                  </span>
+                </label>
+                <p class="auth-feedback ${resetLinkExpired ? 'auth-feedback--error' : ''}" id="authFeedback" ${resetLinkExpired ? '' : 'hidden'}>${resetLinkExpired ? 'This reset link has expired. Enter your email and we will send a new one.' : ''}</p>
+                <button type="submit" class="btn btn-primary full" id="authSubmit">${signingUp ? 'Create account' : 'Sign in'}</button>
+                <button type="button" class="auth-link" id="forgotPasswordBtn" ${signingUp ? 'hidden' : ''}>Forgot password?</button>
+              </form>
+            </div>
           `}
 
           <p class="settings-group-label">Privacy &amp; data</p>
@@ -580,6 +628,23 @@ export async function renderSettings(root, { onSave, onGoToday, showToast, profi
     });
   }
 
+  const shouldFocusAuth = focusAuthOnNextRender;
+  focusAuthOnNextRender = false;
+  if (shouldFocusAuth || recoveryPending || resetLinkExpired) {
+    requestAnimationFrame(() => {
+      const feedback = root.querySelector('#authFeedback:not([hidden]), #resetFeedback:not([hidden])');
+      const target = root.querySelector('#newPassword')
+        || root.querySelector('#authForm input[name="email"]');
+      (feedback || target)?.scrollIntoView({ block: 'center' });
+      target?.focus({ preventScroll: true });
+    });
+  }
+
+  wirePasswordToggles(root);
+  wireAuthModeSwitch(root);
+  wireAuthForm(root, { onSave });
+  wirePasswordResetForm(root, { showToast, onSave });
+
   root.querySelector('#nameForm')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -676,88 +741,14 @@ export async function renderSettings(root, { onSave, onGoToday, showToast, profi
   root.querySelector('#privacyBtn')?.addEventListener('click', () => openLegalModal('privacy'));
   root.querySelector('#termsBtn')?.addEventListener('click', () => openLegalModal('terms'));
 
-  root.querySelector('#authForm')?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const btn = e.target.querySelector('button[type="submit"]');
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent = 'Signing in…';
-    }
-    try {
-      await signIn(fd.get('email'), fd.get('password'));
-      const result = await fullSync();
-      if (result.plan) setPlan(result.plan);
-      showToast?.(`Signed in · ${syncResultMessage(result)}`);
-      onSave();
-    } catch (err) {
-      showToast?.(friendlyAuthError(err.message) || 'Sign in failed');
-    } finally {
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = 'Sign in';
-      }
-    }
-  });
-
-  root.querySelector('#signUpBtn')?.addEventListener('click', async () => {
-    const form = root.querySelector('#authForm');
-    const fd = new FormData(form);
-    const email = fd.get('email');
-    const password = fd.get('password');
-    const displayName = fd.get('display_name');
-    if (!displayName?.trim()) {
-      showToast?.('Please enter your first name');
-      return;
-    }
-    try {
-      const data = await signUp(email, password, displayName);
-      if (data.session) {
-        showToast?.('Account created — welcome!');
-        try {
-          const result = await fullSync();
-          if (result.plan) setPlan(result.plan);
-        } catch (syncErr) {
-          showToast?.(friendlyAuthError(syncErr.message) || 'Signed in — sync will retry later');
-        }
-        onSave();
-        return;
-      }
-      if (data.user) {
-        showToast?.('Account created! Check your email to confirm, then tap Sign in.');
-        return;
-      }
-      showToast?.('Account created — please sign in');
-    } catch (err) {
-      showToast?.(friendlyAuthError(err.message) || 'Sign up failed');
-    }
-  });
-
   root.querySelector('#signOutBtn')?.addEventListener('click', async () => {
     if (!window.confirm('Sign out of your account?')) return;
     const clearLocal = window.confirm(
       'Remove meals stored on this device too?\n\nOK = clear local meals\nCancel = keep them for next sign-in'
     );
+    if (clearLocal) await clearAllLocalMeals();
     await signOut();
-    if (clearLocal) {
-      await clearAllLocalMeals();
-      showToast?.('Signed out — local meals cleared');
-    } else {
-      showToast?.('Signed out');
-    }
-    onSave();
-  });
-
-  root.querySelector('#forgotPasswordBtn')?.addEventListener('click', async () => {
-    const emailInput = root.querySelector('#authForm input[name="email"]');
-    const email = emailInput?.value?.trim() || window.prompt('Enter your account email:');
-    if (!email) return;
-    try {
-      await resetPassword(email);
-      showToast?.('Password reset email sent — check your inbox');
-    } catch (err) {
-      showToast?.(friendlyAuthError(err.message) || 'Could not send reset email');
-    }
+    showToast?.(clearLocal ? 'Signed out — local meals cleared' : 'Signed out');
   });
 
   root.querySelector('#syncBtn')?.addEventListener('click', async () => {
@@ -865,7 +856,14 @@ export async function renderSettings(root, { onSave, onGoToday, showToast, profi
   });
 }
 
-function syncResultMessage({ pushed = 0, pulled = 0, failed = 0 } = {}) {
+/** True when rebuilding settings would wipe an in-progress sign-in or password reset. */
+export function isAuthFormOnScreen() {
+  const form = document.querySelector('#authForm, #newPasswordForm');
+  if (!form) return false;
+  return !form.closest('[hidden]');
+}
+
+export function syncResultMessage({ pushed = 0, pulled = 0, failed = 0 } = {}) {
   if (pushed === 0 && pulled === 0 && failed === 0) {
     return 'Sync complete — everything up to date';
   }
@@ -945,24 +943,234 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
-function friendlyAuthError(message = '') {
-  const msg = String(message);
-  if (/fetch|Failed to fetch|NetworkError/i.test(msg)) {
-    return 'Cannot reach the server — check your internet connection and try again';
+function explainAuth(err) {
+  return friendlyAuthError(authErrorText(err), { dev: import.meta.env.DEV });
+}
+
+function applyAuthMode(root, mode) {
+  authMode = mode === 'signup' ? 'signup' : 'signin';
+  const form = root.querySelector('#authForm');
+  if (!form) return;
+  const signingUp = authMode === 'signup';
+  form.dataset.mode = authMode;
+  const nameField = form.querySelector('[data-auth-name]');
+  const nameInput = form.querySelector('input[name="display_name"]');
+  const password = form.querySelector('input[name="password"]');
+  const submit = form.querySelector('#authSubmit');
+  const forgot = form.querySelector('#forgotPasswordBtn');
+  if (nameField) nameField.hidden = !signingUp;
+  if (nameInput) nameInput.disabled = !signingUp;
+  if (password) {
+    password.autocomplete = signingUp ? 'new-password' : 'current-password';
+    password.placeholder = signingUp ? 'At least 6 characters' : 'Your password';
   }
-  if (/Email not confirmed/i.test(msg)) {
-    return 'Please confirm your email first — check your inbox, then sign in';
+  if (submit && !form.hasAttribute('aria-busy')) {
+    submit.textContent = signingUp ? 'Create account' : 'Sign in';
   }
-  if (/User already registered/i.test(msg)) {
-    return 'That email is already registered — try Sign in instead';
+  if (forgot) forgot.hidden = signingUp;
+  root.querySelectorAll('[data-auth-mode]').forEach((btn) => {
+    const selected = btn.dataset.authMode === authMode;
+    btn.classList.toggle('active', selected);
+    btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+  });
+}
+
+function setAuthFeedback(form, message, kind = 'error') {
+  const el = form.querySelector('.auth-feedback');
+  if (!el) return;
+  if (!message) {
+    el.hidden = true;
+    el.textContent = '';
+    el.className = 'auth-feedback';
+    return;
   }
-  if (/Invalid login credentials/i.test(msg)) {
-    return 'Wrong email or password — double-check and try again';
-  }
-  if (/42703|discount_senior|schema cache/i.test(msg)) {
-    return import.meta.env.DEV
-      ? 'Database needs an update — run supabase/migration-fix-missing-columns.sql in Supabase SQL Editor'
-      : 'Account setup incomplete — please try again in a few minutes';
-  }
-  return msg || 'Something went wrong';
+  el.hidden = false;
+  el.textContent = message;
+  el.className = `auth-feedback auth-feedback--${kind}`;
+  requestAnimationFrame(() => {
+    el.scrollIntoView({ block: 'center' });
+  });
+}
+
+function setAuthBusy(root, form, busy, label) {
+  if (busy) form.setAttribute('aria-busy', 'true');
+  else form.removeAttribute('aria-busy');
+  const card = form.closest('.auth-card') || form;
+  card.querySelectorAll('input, button').forEach((el) => {
+    el.disabled = busy;
+  });
+  const submit = form.querySelector('#authSubmit');
+  if (busy && submit && label) submit.textContent = label;
+  if (!busy) applyAuthMode(root, form.dataset.mode || authMode);
+}
+
+function wirePasswordToggles(root) {
+  root.querySelectorAll('[data-password-toggle]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const input = btn.parentElement?.querySelector('input');
+      if (!input) return;
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.textContent = show ? 'Hide' : 'Show';
+      btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+      input.focus();
+    });
+  });
+}
+
+function wireAuthModeSwitch(root) {
+  const form = root.querySelector('#authForm');
+  if (!form) return;
+  root.querySelectorAll('[data-auth-mode]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      applyAuthMode(root, btn.dataset.authMode);
+      setAuthFeedback(form, '');
+      const field = form.querySelector(authMode === 'signup' ? 'input[name="display_name"]' : 'input[name="email"]');
+      field?.focus();
+    });
+  });
+}
+
+function wireAuthForm(root, { onSave }) {
+  const form = root.querySelector('#authForm');
+  if (!form) return;
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const mode = form.dataset.mode === 'signup' ? 'signup' : 'signin';
+    const fd = new FormData(form);
+    const email = String(fd.get('email') || '');
+    const password = String(fd.get('password') || '');
+    const displayName = String(fd.get('display_name') || '');
+    setAuthFeedback(form, '');
+
+    if (mode === 'signup' && !displayName.trim()) {
+      setAuthFeedback(form, 'Please enter your first name');
+      form.querySelector('input[name="display_name"]')?.focus();
+      return;
+    }
+    if (!email.trim() || !password) {
+      setAuthFeedback(form, 'Enter email and password');
+      form.querySelector(email.trim() ? 'input[name="password"]' : 'input[name="email"]')?.focus();
+      return;
+    }
+    if (mode === 'signup' && password.length < 6) {
+      setAuthFeedback(form, 'Password must be at least 6 characters');
+      form.querySelector('input[name="password"]')?.focus();
+      return;
+    }
+
+    setAuthBusy(root, form, true, mode === 'signup' ? 'Creating account…' : 'Signing in…');
+    setAuthIntent(mode);
+    let keepBusy = false;
+    try {
+      if (mode === 'signup') {
+        const data = await signUp(email, password, displayName);
+        if (data.session) {
+          keepBusy = true;
+          window.setTimeout(() => {
+            if (form.isConnected) onSave?.();
+          }, 2000);
+          return;
+        }
+        cancelAuthIntent();
+        applyAuthMode(root, 'signin');
+        const message = data.user
+          ? 'Account created. Check your email to confirm, then sign in.'
+          : 'Account created — please sign in';
+        setAuthFeedback(form, message, 'ok');
+        return;
+      }
+      await signIn(email, password);
+      clearResetLinkHint();
+      keepBusy = true;
+      window.setTimeout(() => {
+        if (form.isConnected) onSave?.();
+      }, 2000);
+    } catch (err) {
+      cancelAuthIntent();
+      const message = explainAuth(err);
+      setAuthFeedback(form, message);
+    } finally {
+      if (!keepBusy && form.isConnected) setAuthBusy(root, form, false);
+    }
+  });
+
+  form.querySelector('#forgotPasswordBtn')?.addEventListener('click', async () => {
+    const emailInput = form.querySelector('input[name="email"]');
+    const email = emailInput?.value || '';
+    if (!String(email).trim()) {
+      setAuthFeedback(form, 'Enter your email and we will send a reset link');
+      emailInput?.focus();
+      return;
+    }
+    const btn = form.querySelector('#forgotPasswordBtn');
+    if (btn) btn.disabled = true;
+    try {
+      await resetPassword(email);
+      clearResetLinkHint();
+      const message = 'Password reset email sent — check your inbox';
+      setAuthFeedback(form, message, 'ok');
+    } catch (err) {
+      const message = explainAuth(err);
+      setAuthFeedback(form, message);
+    } finally {
+      if (btn?.isConnected) btn.disabled = false;
+    }
+  });
+}
+
+function wirePasswordResetForm(root, { showToast, onSave }) {
+  const form = root.querySelector('#newPasswordForm');
+  if (!form) return;
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const password = form.querySelector('[name="password"]')?.value || '';
+    const confirm = form.querySelector('[name="confirm"]')?.value || '';
+    const feedback = form.querySelector('#resetFeedback');
+    const show = (message, kind = 'error') => {
+      if (!feedback) return;
+      if (!message) {
+        feedback.hidden = true;
+        feedback.textContent = '';
+        feedback.className = 'auth-feedback';
+        return;
+      }
+      feedback.hidden = false;
+      feedback.textContent = message;
+      feedback.className = `auth-feedback auth-feedback--${kind}`;
+      requestAnimationFrame(() => feedback.scrollIntoView({ block: 'center' }));
+    };
+    show('');
+    if (password.length < 6) {
+      show('Password must be at least 6 characters');
+      form.querySelector('[name="password"]')?.focus();
+      return;
+    }
+    if (password !== confirm) {
+      show('Passwords do not match');
+      form.querySelector('[name="confirm"]')?.focus();
+      return;
+    }
+    const btn = form.querySelector('#updatePasswordBtn');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Updating…';
+    }
+    clearPasswordRecovery();
+    try {
+      await updatePassword(password);
+      showToast?.('Password updated');
+      onSave?.();
+    } catch (err) {
+      markPasswordRecovery();
+      const message = explainAuth(err);
+      show(message);
+      if (btn?.isConnected) {
+        btn.disabled = false;
+        btn.textContent = 'Update password';
+      }
+    }
+  });
 }

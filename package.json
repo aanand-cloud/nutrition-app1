@@ -8,6 +8,7 @@
     "dev:https": "vite --host --mode https",
     "build": "node scripts/generate-icons.mjs && vite build",
     "preview": "vite preview",
+    "test": "node --test tests/*.js",
     "icons": "node scripts/generate-icons.mjs",
     "supabase:setup": "node scripts/setup-supabase.mjs",
     "cap:sync": "npm run build && npx cap sync",
