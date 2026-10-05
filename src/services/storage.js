@@ -18,6 +18,10 @@ function openDb() {
   });
 }
 
+function byCreatedAt(a, b) {
+  return String(a?.createdAt || '').localeCompare(String(b?.createdAt || ''));
+}
+
 function todayKey(date = new Date()) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -29,7 +33,7 @@ export function generateId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-export async function saveMeal(meal) {
+export async function saveMeal(meal, { skipCloud = false } = {}) {
   const db = await openDb();
   const record = await new Promise((resolve, reject) => {
     const tx = db.transaction(MEALS_STORE, 'readwrite');
@@ -44,6 +48,8 @@ export async function saveMeal(meal) {
     tx.oncomplete = () => resolve(rec);
     tx.onerror = () => reject(tx.error);
   });
+
+  if (skipCloud) return record;
 
   try {
     const { pushMeal } = await import('./sync.js');
@@ -65,7 +71,7 @@ export async function getMealsForDate(dateKey) {
     const index = store.index('date');
     const req = index.getAll(dateKey);
     req.onsuccess = () => {
-      const meals = (req.result || []).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      const meals = (req.result || []).sort(byCreatedAt);
       resolve(meals);
     };
     req.onerror = () => reject(req.error);
@@ -78,7 +84,7 @@ export async function getAllMeals() {
     const tx = db.transaction(MEALS_STORE, 'readonly');
     const req = tx.objectStore(MEALS_STORE).getAll();
     req.onsuccess = () => {
-      const meals = (req.result || []).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      const meals = (req.result || []).sort(byCreatedAt);
       resolve(meals);
     };
     req.onerror = () => reject(req.error);
@@ -93,7 +99,7 @@ export async function getMealsInRange(startDate, endDate) {
     const req = store.getAll();
     req.onsuccess = () => {
       const meals = (req.result || []).filter((m) => m.date >= startDate && m.date <= endDate);
-      resolve(meals.sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
+      resolve(meals.sort(byCreatedAt));
     };
     req.onerror = () => reject(req.error);
   });

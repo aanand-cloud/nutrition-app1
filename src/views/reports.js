@@ -1,4 +1,4 @@
-import { getMealsInRange } from '../services/storage.js';
+import { getMealsInRange, todayKey } from '../services/storage.js';
 import { weekReport, monthReport } from '../services/reports.js';
 import { getCuisineTips } from '../services/cuisine-tips.js';
 import { formatEnergy, formatEnergyParts, getUnitPrefs } from '../services/goals.js';
@@ -10,9 +10,8 @@ export async function renderReports(root, { profile, onLog } = {}) {
   const monthStart = new Date(end);
   monthStart.setDate(monthStart.getDate() - 29);
 
-  const fmt = (d) => d.toISOString().slice(0, 10);
-  const weekMeals = await getMealsInRange(fmt(weekStart), fmt(end));
-  const monthMeals = await getMealsInRange(fmt(monthStart), fmt(end));
+  const weekMeals = await getMealsInRange(todayKey(weekStart), todayKey(end));
+  const monthMeals = await getMealsInRange(todayKey(monthStart), todayKey(end));
 
   const week = weekReport(weekMeals);
   const month = monthReport(monthMeals);
@@ -45,6 +44,7 @@ export async function renderReports(root, { profile, onLog } = {}) {
             <span class="avg-label">${energyPerDay}</span>
           </div>          ${['protein_g', 'carbs_g', 'fat_g', 'fibre_g'].map((k) => {
             const meta = report.nutrients.find((n) => n.key === k);
+            if (!meta) return '';
             const goal = report.goals[meta.goalKey];
             const val = report.averages[k];
             const pct = goal ? Math.round((val / goal) * 100) : 0;
